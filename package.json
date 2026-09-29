@@ -1,0 +1,20 @@
+{
+  "name": "vapi-webhook-receiver",
+  "version": "1.0.0",
+  "description": "Receive Vapi AI phone calls via webhook and send email notifications",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "body-parser": "^1.20.2",
+    "nodemailer": "^6.9.7"
+  },
+  "author": "Your Name",
+  "license": "MIT"
+}
