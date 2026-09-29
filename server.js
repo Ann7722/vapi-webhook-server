@@ -11,20 +11,44 @@ const PORT = process.env.PORT || 3000;
 // Parse JSON body from Vapi
 app.use(bodyParser.json());
 
-// ===== EMAIL CONFIG =====
-// Uses Gmail by default. For other providers, change the transporter below.
-const transporter = nodemailer.createTransport({
-  service: 'gmail',
-  auth: {
-    user: process.env.EMAIL_USER,      // Your Gmail address
-    pass: process.env.EMAIL_PASS       // Gmail App Password (NOT your login password)
-  }
+// ===== CORS =====
+// Allow your HTML frontend to call this API from anywhere
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
 });
+
+// ===== EMAIL CONFIG =====
+// Supports Gmail, QQ Mail (qq.com), 163 Mail, Outlook, etc.
+const EMAIL_USER = process.env.EMAIL_USER || '';
+
+let transporter;
+if (EMAIL_USER.includes('@qq.com')) {
+  transporter = nodemailer.createTransport({
+    host: 'smtp.qq.com',
+    port: 465,
+    secure: true,
+    auth: {
+      user: EMAIL_USER,
+      pass: process.env.EMAIL_PASS
+    }
+  });
+} else {
+  transporter = nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: EMAIL_USER,
+      pass: process.env.EMAIL_PASS
+    }
+  });
+}
 
 const NOTIFICATION_EMAIL = process.env.NOTIFY_EMAIL || process.env.EMAIL_USER;
 
 // ===== HEALTH CHECK =====
-// Vapi or uptime monitors can ping this to confirm the server is alive
 app.get('/', (req, res) => {
   res.json({
     status: 'ok',
@@ -38,157 +62,124 @@ app.get('/health', (req, res) => {
 });
 
 // ===== WEBHOOK ENDPOINT =====
-// Vapi sends a POST here after each call ends
 app.post('/webhook', async (req, res) => {
-  console.log('📞 Webhook received at', new Date().toISOString());
-  console.log('Payload:', JSON.stringify(req.body, null, 2));
-
+  console.log('Webhook received at', new Date().toISOString());
   try {
     const payload = req.body;
-
-    // Extract data from Vapi payload
-    // Vapi sends different structures depending on your configuration
     const callData = extractCallData(payload);
-
-    // Send email notification
     await sendEmailNotification(callData);
-
     res.status(200).json({ received: true, emailSent: true });
   } catch (error) {
-    console.error('❌ Error processing webhook:', error);
+    console.error('Error processing webhook:', error);
     res.status(500).json({ received: true, error: error.message });
   }
 });
 
-// ===== DATA EXTRACTION =====
 function extractCallData(payload) {
-  // Vapi webhook structure (adjust based on your actual Vapi configuration)
   const message = payload.message || payload;
-  
   return {
     callId: message.call?.id || message.id || 'unknown',
-    customerName: extractVariable(message, 'customer_name') || extractVariable(message, 'name') || 'Not provided',
-    phone: extractVariable(message, 'phone') || extractVariable(message, 'customer_phone') || 'Not provided',
-    movingDate: extractVariable(message, 'moving_date') || extractVariable(message, 'date') || 'Not provided',
-    loadingAddress: extractVariable(message, 'loading_address') || extractVariable(message, 'from_address') || 'Not provided',
-    unloadingAddress: extractVariable(message, 'unloading_address') || extractVariable(message, 'to_address') || 'Not provided',
-    propertySize: extractVariable(message, 'property_size') || extractVariable(message, 'size') || 'Not provided',
-    specialItems: extractVariable(message, 'special_items') || extractVariable(message, 'special') || 'None',
-    estimatedHours: extractVariable(message, 'estimated_hours') || extractVariable(message, 'hours') || 'Not provided',
-    notes: extractVariable(message, 'notes') || extractVariable(message, 'additional_notes') || 'None',
-    callDuration: message.call?.duration || message.duration || 0,
-    recordingUrl: message.call?.recordingUrl || message.recording_url || null,
-    transcript: message.call?.transcript || message.transcript || 'Not available',
-    rawPayload: JSON.stringify(payload, null, 2)
+    customerName: extractVariable(message, 'customer_name') || 'Not provided',
+    phone: extractVariable(message, 'phone') || 'Not provided',
+    movingDate: extractVariable(message, 'moving_date') || 'Not provided',
+    loadingAddress: extractVariable(message, 'loading_address') || 'Not provided',
+    unloadingAddress: extractVariable(message, 'unloading_address') || 'Not provided',
+    propertySize: extractVariable(message, 'property_size') || 'Not provided',
+    specialItems: extractVariable(message, 'special_items') || 'None',
+    estimatedHours: extractVariable(message, 'estimated_hours') || 'Not provided',
+    notes: extractVariable(message, 'notes') || '',
+    callDuration: message.call?.duration || 0,
+    recordingUrl: message.call?.recordingUrl || '',
+    transcript: message.call?.transcript || ''
   };
 }
 
 function extractVariable(message, key) {
-  // Try to find variable in Vapi's variable_store or message structure
-  const vars = message.call?.variableStore || message.variableStore || message.variables || {};
-  if (vars[key]) return vars[key];
-  
-  // Also check results or analysis
-  const results = message.call?.results || message.results || {};
-  if (results[key]) return results[key];
-  
+  if (message.variableStore && message.variableStore[key] !== undefined) {
+    return message.variableStore[key];
+  }
+  if (message.call && message.call.variableStore && message.call.variableStore[key] !== undefined) {
+    return message.call.variableStore[key];
+  }
   return null;
 }
 
-// ===== EMAIL NOTIFICATION =====
 async function sendEmailNotification(data) {
-  const subject = `📞 New Moving Inquiry - ${data.customerName} (${data.phone})`;
-  
-  const htmlBody = `
-    <h2>New Moving Inquiry Received</h2>
-    <p><strong>Call ID:</strong> ${data.callId}</p>
-    <p><strong>Call Duration:</strong> ${Math.round(data.callDuration / 60)} minutes</p>
-    <hr>
-    
-    <h3>Customer Information</h3>
-    <ul>
-      <li><strong>Name:</strong> ${data.customerName}</li>
-      <li><strong>Phone:</strong> ${data.phone}</li>
-    </ul>
-    
-    <h3>Moving Details</h3>
-    <ul>
-      <li><strong>Date/Time:</strong> ${data.movingDate}</li>
-      <li><strong>Loading Address:</strong> ${data.loadingAddress}</li>
-      <li><strong>Unloading Address:</strong> ${data.unloadingAddress}</li>
-      <li><strong>Property Size:</strong> ${data.propertySize}</li>
-      <li><strong>Estimated Hours:</strong> ${data.estimatedHours}</li>
-      <li><strong>Special Items:</strong> ${data.specialItems}</li>
-    </ul>
-    
-    <h3>Additional Notes</h3>
-    <p>${data.notes}</p>
-    
-    ${data.recordingUrl ? `<p><strong>Call Recording:</strong> <a href="${data.recordingUrl}">Listen</a></p>` : ''}
-    
-    <hr>
-    <p style="color: #666; font-size: 12px;">
-      <strong>Full Transcript:</strong><br>
-      <pre style="background: #f5f5f5; padding: 10px; border-radius: 4px;">${data.transcript}</pre>
-    </p>
-    
-    <hr>
-    <p style="color: #999; font-size: 11px;">
-      This is an automated notification from your Vapi AI Phone Assistant.<br>
-      Received at: ${new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })} PT
-    </p>
-  `;
-  
-  const textBody = `
-NEW MOVING INQUIRY
-==================
-Call ID: ${data.callId}
-Duration: ${Math.round(data.callDuration / 60)} minutes
+  const subject = `New Moving Reservation - ${data.customerName}`;
+  const text = `
+New moving reservation received!
 
-CUSTOMER
---------
-Name: ${data.customerName}
+Customer: ${data.customerName}
 Phone: ${data.phone}
-
-MOVING DETAILS
---------------
-Date/Time: ${data.movingDate}
+Moving Date: ${data.movingDate}
 From: ${data.loadingAddress}
 To: ${data.unloadingAddress}
-Size: ${data.propertySize}
-Hours: ${data.estimatedHours}
+Property Size: ${data.propertySize}
 Special Items: ${data.specialItems}
-
-NOTES
------
-${data.notes}
-
-TRANSCRIPT
-----------
-${data.transcript}
+Estimated Hours: ${data.estimatedHours}
+Notes: ${data.notes || 'None'}
+Call Duration: ${data.callDuration}s
+Recording: ${data.recordingUrl || 'N/A'}
 
 ---
-Automated notification from Vapi AI Assistant
-Received: ${new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' })} PT
-  `;
+Sent from Vapi Webhook Receiver
+  `.trim();
 
-  const mailOptions = {
-    from: process.env.EMAIL_USER,
+  await transporter.sendMail({
+    from: EMAIL_USER,
     to: NOTIFICATION_EMAIL,
     subject: subject,
-    text: textBody,
-    html: htmlBody
-  };
-
-  await transporter.sendMail(mailOptions);
-  console.log('✅ Email sent to', NOTIFICATION_EMAIL);
+    text: text
+  });
 }
 
-// ===== START SERVER =====
+// ===== SEND EMAIL API (for HTML frontend) =====
+app.post('/send-email', async (req, res) => {
+  console.log('Send email request at', new Date().toISOString());
+  const { to, subject, body, html } = req.body;
+
+  if (!to || !subject || !body) {
+    return res.status(400).json({
+      success: false,
+      error: 'Missing required fields: to, subject, body'
+    });
+  }
+
+  const emailRegex = /^<sup>\s@</sup>+@<sup>\s@</sup>+\.<sup>\s@</sup>+$/;
+  if (!emailRegex.test(to)) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid recipient email format'
+    });
+  }
+
+  try {
+    await transporter.sendMail({
+      from: EMAIL_USER,
+      to: to,
+      subject: subject,
+      text: body,
+      html: html || body.replace(/\n/g, '<br>')
+    });
+    console.log('Email sent to', to);
+    res.status(200).json({
+      success: true,
+      message: 'Email sent successfully',
+      to: to
+    });
+  } catch (error) {
+    console.error('Error sending email:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
 app.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`📧 Notification email: ${NOTIFICATION_EMAIL}`);
-  console.log(`🔗 Webhook URL: https://your-app-url.onrender.com/webhook`);
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Email user: ${EMAIL_USER}`);
+  console.log(`Notification email: ${NOTIFICATION_EMAIL}`);
 });
 
 module.exports = app;
